@@ -24,8 +24,16 @@ runs:
   using: composite
   steps:
     - name: Upload coverage report
-      shell: bash
+      shell: bash -euo pipefail {0}
       env:
+        COMMIT_OID: >-
+          ${{
+            case(
+              github.event_name == 'pull_request' || github.event_name == 'pull_request_target',
+              github.event.pull_request.head.sha,
+              github.sha
+            )
+          }}
         GH_TOKEN: ${{ inputs.token }}
         INPUT_FILE: ${{ inputs.file }}
         INPUT_LANGUAGE: ${{ inputs.language }}
@@ -34,9 +42,17 @@ runs:
         GITHUB_EVENT_NAME: ${{ github.event_name }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_API_URL: ${{ github.api_url }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PULL_REQUEST_HEAD_REPO_NAME: ${{ github.event.pull_request.head.repo.full_name }}
+        REF: >-
+          ${{
+            case(
+              github.event_name == 'pull_request' || github.event_name == 'pull_request_target',
+              '',
+              github.ref
+            )
+          }}
       run: |
-        set -euo pipefail
-
         export GH_HOST="${GITHUB_SERVER_URL#*://}"
 
         if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
@@ -44,28 +60,20 @@ runs:
           exit 0
         fi
 
-        if [ "${{ github.event.pull_request.head.repo.full_name }}" != "" ] && \
-           [ "${{ github.event.pull_request.head.repo.full_name }}" != "$GITHUB_REPOSITORY" ]; then
-          echo "::notice::Skipping coverage upload for fork PR (from ${{ github.event.pull_request.head.repo.full_name }})"
+        if [ "$PULL_REQUEST_HEAD_REPO_NAME" != "" ] && \
+           [ "$PULL_REQUEST_HEAD_REPO_NAME" != "$GITHUB_REPOSITORY" ]; then
+          echo "::notice::Skipping coverage upload for fork PR (from $PULL_REQUEST_HEAD_REPO_NAME)"
           exit 0
         fi
 
-        if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "$GITHUB_EVENT_NAME" = "pull_request_target" ]; then
-          COMMIT_OID="${{ github.event.pull_request.head.sha }}"
-          REF=""
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-        else
-          COMMIT_OID="${{ github.sha }}"
-          REF="${{ github.ref }}"
+        if [ "$GITHUB_EVENT_NAME" != "pull_request" ] && [ "$GITHUB_EVENT_NAME" != "pull_request_target" ]; then
           PR_NUMBER=$(gh pr list \
             --repo "$GITHUB_REPOSITORY" \
-            --head "${{ github.ref_name }}" \
+            --head "$GITHUB_REF_NAME" \
             --state open \
             --json number \
             --jq '.[0].number // empty' 2>/dev/null || true)
         fi
 
-        COMMIT_OID="$COMMIT_OID" \
-        REF="$REF" \
         PR_NUMBER="$PR_NUMBER" \
         python3 "$GITHUB_ACTION_PATH/upload_coverage.py"
