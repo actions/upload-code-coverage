@@ -34,12 +34,15 @@ jobs:
     #   - name: Checkout caller repository
     #     uses: actions/checkout@v4
 
-    #   - name: Checkout upload-code-coverage scripts
-    #     uses: actions/checkout@v4
-    #     with:
-    #       repository: actions/upload-code-coverage
-    #       path: .upload-code-coverage
-
+      - name: Checkout upload-code-coverage scripts
+        uses: actions/checkout@v4
+        with:
+          repository: actions/upload-code-coverage
+          path: .upload-code-coverage
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-report-go
       - name: Upload coverage report
         shell: bash
         env:
