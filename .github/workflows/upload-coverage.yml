@@ -1,0 +1,83 @@
+name: Upload Code Coverage
+
+on:
+  workflow_call:
+    inputs:
+      file:
+        description: 'Path to the Cobertura XML coverage report'
+        required: true
+        type: string
+      language:
+        description: 'Linguist language name (e.g. "Java", "Go", "Python")'
+        required: true
+        type: string
+      label:
+        description: 'Label for the coverage report (e.g. "code-coverage/jacoco")'
+        required: true
+        type: string
+      fail-on-error:
+        description: 'Whether to fail the workflow step if the upload fails (set to false to treat upload errors as warnings)'
+        required: false
+        type: string
+        default: 'true'
+    secrets:
+      token:
+        description: 'GitHub token with code-quality:write permission. Defaults to the workflow github.token if not provided.'
+        required: false
+
+jobs:
+  upload:
+    name: Upload coverage report
+    runs-on: ubuntu-latest
+    if: github.event_name != 'merge_group'
+    steps:
+    #   - name: Checkout caller repository
+    #     uses: actions/checkout@v4
+
+    #   - name: Checkout upload-code-coverage scripts
+    #     uses: actions/checkout@v4
+    #     with:
+    #       repository: actions/upload-code-coverage
+    #       path: .upload-code-coverage
+
+      - name: Upload coverage report
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+          INPUT_FILE: ${{ inputs.file }}
+          INPUT_LANGUAGE: ${{ inputs.language }}
+          INPUT_LABEL: ${{ inputs.label }}
+          FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+        run: |
+          set -euo pipefail
+
+          export GH_HOST="${GITHUB_SERVER_URL#*://}"
+
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "" ] && \
+             [ "${{ github.event.pull_request.head.repo.full_name }}" != "$GITHUB_REPOSITORY" ]; then
+            echo "::notice::Skipping coverage upload for fork PR (from ${{ github.event.pull_request.head.repo.full_name }})"
+            exit 0
+          fi
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "$GITHUB_EVENT_NAME" = "pull_request_target" ]; then
+            COMMIT_OID="${{ github.event.pull_request.head.sha }}"
+            REF=""
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          else
+            COMMIT_OID="${{ github.sha }}"
+            REF="${{ github.ref }}"
+            PR_NUMBER=$(gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --head "${{ github.ref_name }}" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty' 2>/dev/null || true)
+          fi
+
+          COMMIT_OID="$COMMIT_OID" \
+          REF="$REF" \
+          PR_NUMBER="$PR_NUMBER" \
+          python3 "$GITHUB_WORKSPACE/.upload-code-coverage/upload_coverage.py"
