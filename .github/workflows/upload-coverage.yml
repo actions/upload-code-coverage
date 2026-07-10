@@ -20,6 +20,10 @@ on:
         required: false
         type: string
         default: 'true'
+      dependent-job:
+        description: 'Name of the job that produces the coverage artifact (used in needs.<job>.result check)'
+        required: true
+        type: string
     secrets:
       token:
         description: 'GitHub token with code-quality:write permission. Defaults to the workflow github.token if not provided.'
@@ -27,7 +31,7 @@ on:
 
 jobs:
   upload:
-    if: ${{ !cancelled() && needs.test.result == 'success' && (github.event_name == 'pull_request' || github.ref == github.event.repository.default_branch) }}
+    if: ${{ !cancelled() && needs[inputs.dependent-job].result == 'success' && (github.event_name == 'pull_request' || github.ref == github.event.repository.default_branch) }}
     name: Upload coverage report
     runs-on: ubuntu-latest
     steps:
