@@ -31,7 +31,7 @@ on:
 
 jobs:
   upload:
-    if: ${{ !cancelled() && github.event_name != 'merge_group' && jobs[inputs.dependent-job].result == 'success' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch ))}}
+    if: ${{ !cancelled() && github.event_name != 'merge_group' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch ))}}
     name: Upload coverage report
     runs-on: ubuntu-latest
     steps:
