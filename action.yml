@@ -25,7 +25,7 @@ runs:
   steps:
     - name: Upload coverage report
       shell: bash
-      if: ${{ !cancelled() && github.event_name != 'merge_group' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch ))}}
+      if: ${{ failure() }}
       env:
         GH_TOKEN: ${{ inputs.token }}
         INPUT_FILE: ${{ inputs.file }}
@@ -72,7 +72,7 @@ runs:
         python3 "$GITHUB_ACTION_PATH/upload_coverage.py"
 
     - name: Post-step telemetry
-      if: always() && env._COVERAGE_TELEMETRY_STARTED_AT != ''
+      if: ${{ failure() }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
