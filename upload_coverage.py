@@ -22,6 +22,10 @@ FAIL_ON_ERROR_HINT = (
     "To treat upload errors as warnings, add 'fail-on-error: false' to the action inputs."
 )
 
+STATUS_CHECK_INITIAL_BACKOFF_SECONDS = 5
+STATUS_CHECK_BACKOFF_MULTIPLIER = 2
+DEFAULT_WAIT_FOR_PROCESSING_TIMEOUT_SECONDS = 155
+
 
 def emit_annotation(level: str, message: str) -> None:
     print(f"::{level}::{message}")
@@ -63,6 +67,24 @@ def _extract_message(body: str) -> str:
     except (json.JSONDecodeError, AttributeError, TypeError):
         pass
     return body
+
+
+def _load_json_object(body: str) -> dict:
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _parse_positive_int(raw_value: str, *, env_name: str) -> int:
+    try:
+        value = int(raw_value)
+    except ValueError as error:
+        raise ValueError(f"{env_name} must be a positive integer") from error
+    if value <= 0:
+        raise ValueError(f"{env_name} must be a positive integer")
+    return value
 
 
 def encode_coverage_report(file_path: str) -> str:
@@ -127,6 +149,118 @@ def upload_report(
         return 0, str(error.reason)
 
 
+def fetch_upload_status(
+    *,
+    coverage_report_id: str,
+    repository: str,
+    api_url: str,
+    token: str,
+    opener=urllib.request.urlopen,
+) -> Tuple[int, str]:
+    request = urllib.request.Request(
+        url=f"{api_url.rstrip('/')}/repos/{repository}/code-coverage/reports/{coverage_report_id}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+        method="GET",
+    )
+
+    try:
+        with opener(request) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            return response.getcode(), body
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        return error.code, body
+    except urllib.error.URLError as error:
+        return 0, str(error.reason)
+
+
+def wait_for_processing(
+    *,
+    coverage_report_id: str,
+    repository: str,
+    api_url: str,
+    token: str,
+    timeout_seconds: int,
+    opener=urllib.request.urlopen,
+    sleep=time.sleep,
+    monotonic=time.monotonic,
+) -> Tuple[bool, Optional[str], Optional[str]]:
+    print("::group::Waiting for processing to finish")
+    try:
+        deadline = monotonic() + timeout_seconds
+        status_check_backoff = STATUS_CHECK_INITIAL_BACKOFF_SECONDS
+
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return (
+                    False,
+                    "processing_timeout",
+                    f"Timed out waiting {timeout_seconds} seconds for coverage report processing to finish",
+                )
+
+            sleep(min(status_check_backoff, remaining))
+
+            status_code, body = fetch_upload_status(
+                coverage_report_id=coverage_report_id,
+                repository=repository,
+                api_url=api_url,
+                token=token,
+                opener=opener,
+            )
+
+            if status_code == 200:
+                data = _load_json_object(body)
+                processing_status = data.get("processing_status", "")
+                print(f"Coverage upload processing status: {processing_status or '<missing>'}.")
+
+                if processing_status in ("pending", "processing"):
+                    status_check_backoff *= STATUS_CHECK_BACKOFF_MULTIPLIER
+                    continue
+
+                if processing_status == "succeeded":
+                    print("Coverage report processing finished successfully.")
+                    return True, None, None
+
+                if processing_status == "failed":
+                    errors = data.get("errors")
+                    message = "Coverage report processing failed"
+                    if isinstance(errors, list) and errors:
+                        message = f"{message}: {'; '.join(str(error) for error in errors)}"
+                    return False, "processing_failed", message
+
+                emit_annotation(
+                    "warning",
+                    "Coverage upload status response did not include a valid processing_status. Retrying until timeout.",
+                )
+                status_check_backoff *= STATUS_CHECK_BACKOFF_MULTIPLIER
+                continue
+
+            if status_code and 400 <= status_code < 500:
+                return (
+                    False,
+                    f"status_check_http_{status_code}",
+                    f"Checking coverage upload status failed (HTTP {status_code}): {_extract_message(body)}",
+                )
+
+            if status_code == 0:
+                emit_annotation(
+                    "warning",
+                    "Checking coverage upload status failed: could not reach the API. Retrying until timeout.",
+                )
+            else:
+                emit_annotation(
+                    "warning",
+                    f"Checking coverage upload status returned HTTP {status_code}. Retrying until timeout.",
+                )
+            status_check_backoff *= STATUS_CHECK_BACKOFF_MULTIPLIER
+    finally:
+        print("::endgroup::")
+
+
 def handle_response(status: int, body: str, fail_on_error: bool) -> int:
     """Process the upload response. Returns the process exit code."""
     if status == 0:
@@ -167,6 +301,8 @@ def main(
     environ: Optional[Mapping[str, str]] = None,
     opener=urllib.request.urlopen,
     status_opener=urllib.request.urlopen,
+    sleep=time.sleep,
+    monotonic=time.monotonic,
 ) -> int:
     env = dict(os.environ if environ is None else environ)
 
@@ -199,12 +335,30 @@ def main(
         return 1
 
     fail_on_error = env.get("FAIL_ON_ERROR", "true").lower() != "false"
+    wait_for_processing_enabled = env.get("WAIT_FOR_PROCESSING", "true").lower() != "false"
 
     commit_oid = env.get("COMMIT_OID", "")
     ref = env.get("REF", "")
     pr_number = env.get("PR_NUMBER", "")
     language = env.get("INPUT_LANGUAGE", "")
     label = env.get("INPUT_LABEL", "")
+
+    try:
+        wait_for_processing_timeout = _parse_positive_int(
+            env.get(
+                "WAIT_FOR_PROCESSING_TIMEOUT",
+                str(DEFAULT_WAIT_FOR_PROCESSING_TIMEOUT_SECONDS),
+            ),
+            env_name="WAIT_FOR_PROCESSING_TIMEOUT",
+        )
+    except ValueError as error:
+        emit_annotation("error", str(error))
+        _send_completed_report(
+            starting_report, "user-error",
+            error_type="invalid_input", error_message=str(error),
+            repository=repository, api_url=api_url, token=token, opener=status_opener,
+        )
+        return 1
 
     log_upload_parameters(
         commit_oid=commit_oid,
@@ -245,18 +399,49 @@ def main(
 
     upload_duration_ms = int((time.monotonic() - upload_start) * 1000)
     exit_code = handle_response(http_status, body, fail_on_error)
+    telemetry_status = None
+    error_type = None
+    error_message = None
+
+    if http_status == 201 and wait_for_processing_enabled:
+        coverage_report_id = _load_json_object(body).get("id", "")
+        if not coverage_report_id:
+            error_type = "missing_report_id"
+            error_message = "Coverage upload succeeded but the response did not include an upload id"
+            emit_annotation("error", f"{error_message}. {FAIL_ON_ERROR_HINT}")
+            exit_code = 1 if fail_on_error else 0
+            telemetry_status = "failure"
+        else:
+            processed, processing_error_type, processing_error_message = wait_for_processing(
+                coverage_report_id=str(coverage_report_id),
+                repository=repository,
+                api_url=api_url,
+                token=token,
+                timeout_seconds=wait_for_processing_timeout,
+                opener=opener,
+                sleep=sleep,
+                monotonic=monotonic,
+            )
+            if processed:
+                telemetry_status = "success"
+            else:
+                error_type = processing_error_type
+                error_message = processing_error_message
+                emit_annotation("error", f"{processing_error_message}. {FAIL_ON_ERROR_HINT}")
+                exit_code = 1 if fail_on_error else 0
+                telemetry_status = (
+                    "user-error" if processing_error_type == "processing_failed" else "failure"
+                )
 
     # Derive telemetry status from http_status (not exit_code) so that
     # fail-on-error:false still reports failures/user-errors to Datadog.
-    if http_status and 200 <= http_status < 300:
+    if telemetry_status is None and http_status and 200 <= http_status < 300:
         telemetry_status = "success"
-        error_type = None
-        error_message = None
-    elif http_status and 400 <= http_status < 500:
+    elif telemetry_status is None and http_status and 400 <= http_status < 500:
         telemetry_status = "user-error"
         error_type = f"http_{http_status}"
         error_message = _extract_message(body)
-    else:
+    elif telemetry_status is None:
         telemetry_status = "failure"
         error_type = f"http_{http_status}" if http_status else "network_error"
         error_message = _extract_message(body)

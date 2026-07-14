@@ -31,6 +31,17 @@ class FakeResponse:
         return self.status
 
 
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
 class UploadCoverageTests(unittest.TestCase):
     def setUp(self):
         self.test_dir = Path(mkdtemp(dir=Path(__file__).parent))
@@ -53,20 +64,29 @@ class UploadCoverageTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir)
 
+    def successful_opener(self):
+        return mock.Mock(side_effect=[
+            FakeResponse(status=201, body=b'{"id":"report-123"}'),
+            FakeResponse(status=200, body=b'{"processing_status":"succeeded","errors":[]}'),
+        ])
+
     def run_main(self, env=None, opener=None):
         stdout = io.StringIO()
-        opener = opener or mock.Mock(return_value=FakeResponse())
+        opener = opener or self.successful_opener()
         status_opener = mock.Mock(return_value=FakeResponse())
+        clock = FakeClock()
         with redirect_stdout(stdout):
             exit_code = upload_coverage.main(
                 environ=env or self.base_env,
                 opener=opener,
                 status_opener=status_opener,
+                sleep=clock.sleep,
+                monotonic=clock.monotonic,
             )
         return exit_code, stdout.getvalue(), opener
 
     def request_payload(self, opener):
-        request = opener.call_args.args[0]
+        request = opener.call_args_list[0].args[0]
         return json.loads(request.data.decode("utf-8"))
 
     # --- File validation ---
@@ -87,7 +107,83 @@ class UploadCoverageTests(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
         self.assertIn("Coverage report uploaded successfully.", output)
+        self.assertEqual(2, opener.call_count)
+
+    def test_waits_for_processing_after_successful_upload(self):
+        opener = mock.Mock(side_effect=[
+            FakeResponse(status=201, body=b'{"id":"report-123"}'),
+            FakeResponse(status=200, body=b'{"processing_status":"pending","errors":[]}'),
+            FakeResponse(status=200, body=b'{"processing_status":"succeeded","errors":[]}'),
+        ])
+
+        exit_code, output, _ = self.run_main(opener=opener)
+
+        self.assertEqual(0, exit_code)
+        self.assertIn("Waiting for processing to finish", output)
+        self.assertIn("Coverage upload processing status: pending.", output)
+        self.assertIn("Coverage upload processing status: succeeded.", output)
+        self.assertIn("Coverage report processing finished successfully.", output)
+        self.assertEqual(3, opener.call_count)
+
+    def test_processing_failure_exits_with_error_by_default(self):
+        opener = mock.Mock(side_effect=[
+            FakeResponse(status=201, body=b'{"id":"report-123"}'),
+            FakeResponse(
+                status=200,
+                body=b'{"processing_status":"failed","errors":["invalid coverage payload"]}',
+            ),
+        ])
+
+        exit_code, output, _ = self.run_main(opener=opener)
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("Coverage report processing failed: invalid coverage payload", output)
+
+    def test_processing_failure_respects_fail_on_error_false(self):
+        env = dict(self.base_env, FAIL_ON_ERROR="false")
+        opener = mock.Mock(side_effect=[
+            FakeResponse(status=201, body=b'{"id":"report-123"}'),
+            FakeResponse(
+                status=200,
+                body=b'{"processing_status":"failed","errors":["invalid coverage payload"]}',
+            ),
+        ])
+
+        exit_code, output, _ = self.run_main(env=env, opener=opener)
+
+        self.assertEqual(0, exit_code)
+        self.assertIn("::error::Coverage report processing failed", output)
+
+    def test_wait_for_processing_can_be_disabled(self):
+        env = dict(self.base_env, WAIT_FOR_PROCESSING="false")
+        opener = mock.Mock(return_value=FakeResponse(status=201, body=b'{"id":"report-123"}'))
+
+        exit_code, output, _ = self.run_main(env=env, opener=opener)
+
+        self.assertEqual(0, exit_code)
+        self.assertNotIn("Waiting for processing to finish", output)
         opener.assert_called_once()
+
+    def test_processing_timeout_exits_with_error(self):
+        env = dict(self.base_env, WAIT_FOR_PROCESSING_TIMEOUT="4")
+        opener = mock.Mock(side_effect=[
+            FakeResponse(status=201, body=b'{"id":"report-123"}'),
+            FakeResponse(status=200, body=b'{"processing_status":"pending","errors":[]}'),
+        ])
+
+        exit_code, output, _ = self.run_main(env=env, opener=opener)
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("Timed out waiting 4 seconds", output)
+
+    def test_invalid_wait_timeout_exits_with_user_error(self):
+        env = dict(self.base_env, WAIT_FOR_PROCESSING_TIMEOUT="zero")
+
+        exit_code, output, opener = self.run_main(env=env)
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("WAIT_FOR_PROCESSING_TIMEOUT must be a positive integer", output)
+        opener.assert_not_called()
 
     def test_successful_with_pr_number_uses_pull_request_number(self):
         env = dict(self.base_env, REF="", PR_NUMBER="42")
@@ -328,7 +424,7 @@ class UploadCoverageTests(unittest.TestCase):
     def test_payload_structure_and_encoding(self):
         exit_code, _, opener = self.run_main()
 
-        request = opener.call_args.args[0]
+        request = opener.call_args_list[0].args[0]
         payload = self.request_payload(opener)
         decoded = gzip.decompress(base64.b64decode(payload["coverage_report"]))
 
@@ -400,7 +496,7 @@ class UploadCoverageTests(unittest.TestCase):
     # --- Telemetry integration ---
 
     def test_telemetry_sends_starting_and_success_reports(self):
-        opener = mock.Mock(return_value=FakeResponse())
+        opener = self.successful_opener()
         status_opener = mock.Mock(return_value=FakeResponse())
         stdout = io.StringIO()
 
@@ -464,7 +560,7 @@ class UploadCoverageTests(unittest.TestCase):
 
     def test_telemetry_failure_does_not_affect_action_exit_code(self):
         """Status reporting errors must never cause the action to fail."""
-        opener = mock.Mock(return_value=FakeResponse())
+        opener = self.successful_opener()
         status_opener = mock.Mock(side_effect=Exception("telemetry boom"))
         stdout = io.StringIO()
 

@@ -15,6 +15,14 @@ inputs:
     description: 'Whether to fail the workflow step if the upload fails (set to false to treat upload errors as warnings)'
     required: false
     default: 'true'
+  wait-for-processing:
+    description: 'Whether to wait for GitHub to finish processing the uploaded coverage report before completing the step'
+    required: false
+    default: 'true'
+  wait-for-processing-timeout:
+    description: 'How many seconds to wait for coverage report processing before failing the step'
+    required: false
+    default: '155'
   token:
     description: 'GitHub token with code-quality:write permission'
     required: false
@@ -31,6 +39,8 @@ runs:
         INPUT_LANGUAGE: ${{ inputs.language }}
         INPUT_LABEL: ${{ inputs.label }}
         FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        WAIT_FOR_PROCESSING: ${{ inputs.wait-for-processing }}
+        WAIT_FOR_PROCESSING_TIMEOUT: ${{ inputs.wait-for-processing-timeout }}
         GITHUB_EVENT_NAME: ${{ github.event_name }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_API_URL: ${{ github.api_url }}
@@ -78,6 +88,8 @@ runs:
         INPUT_LANGUAGE: ${{ inputs.language }}
         INPUT_LABEL: ${{ inputs.label }}
         FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        WAIT_FOR_PROCESSING: ${{ inputs.wait-for-processing }}
+        WAIT_FOR_PROCESSING_TIMEOUT: ${{ inputs.wait-for-processing-timeout }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_API_URL: ${{ github.api_url }}
         COMMIT_OID: ${{ github.event.pull_request.head.sha || github.sha }}

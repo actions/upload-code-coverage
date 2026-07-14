@@ -22,6 +22,8 @@ The action handles everything else automatically: gzip/base64 encoding, resolvin
 | `language` | Yes | | Linguist language name (e.g. `Java`, `Go`, `Python`) |
 | `label` | Yes | | Label for the report (e.g. `code-coverage/jacoco`) |
 | `fail-on-error` | No | `true` | Whether to fail the workflow step if the upload fails |
+| `wait-for-processing` | No | `true` | Whether to wait for GitHub to finish processing the uploaded report before completing the step |
+| `wait-for-processing-timeout` | No | `155` | How many seconds to wait for processing before failing the step |
 | `token` | No | `github.token` | GitHub token with `code-quality:write` permission |
 
 ## Permissions
@@ -40,6 +42,8 @@ For push-only workflows where the action looks up PR numbers via `gh pr list`, a
 
 By default, the action fails the workflow step (exits with code 1) when the upload is unsuccessful. This ensures you notice when coverage data is not being stored.
 
+By default, the action also waits for GitHub to finish processing a successful upload. If processing reports `failed`, or if it never reaches a terminal status before the timeout, the step fails the same way as an upload error.
+
 If coverage upload is best-effort in your workflow and you don't want a transient API failure to block CI, set `fail-on-error: false`:
 
 ```yaml
@@ -52,6 +56,17 @@ If coverage upload is best-effort in your workflow and you don't want a transien
 ```
 
 When `fail-on-error` is `false`, upload errors are still surfaced as `::error::` annotations in the workflow log, but the step exits 0.
+
+If you want the action to return immediately after the upload request instead of waiting for processing, set `wait-for-processing: false`. You can also tune the processing timeout:
+
+```yaml
+- uses: actions/upload-code-coverage@v1
+  with:
+    file: cobertura.xml
+    language: Java
+    label: code-coverage/jacoco
+    wait-for-processing-timeout: 300
+```
 
 ## Event handling
 
