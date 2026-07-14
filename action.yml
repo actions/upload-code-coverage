@@ -22,6 +22,7 @@ inputs:
 
 runs:
   using: composite
+  if: ${{ !cancelled() && github.event_name != 'merge_group' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch ))}}
   steps:
     - name: Upload coverage report
       shell: bash
