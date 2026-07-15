@@ -84,34 +84,32 @@ def _gather_action_metadata(env: Dict[str, str]) -> Dict[str, Any]:
     return meta
 
 
-def build_starting_report(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+def build_starting_report(env: Dict[str, str]) -> Dict[str, Any]:
     """Build the initial "starting" status report.
 
     This captures input parameters, runner info, and workflow context
     at the start of execution.
     """
-    e = dict(os.environ if env is None else env)
-
     report: Dict[str, Any] = {
         "status": "starting",
         "started_at": _now_iso(),
     }
 
-    report.update(_gather_action_metadata(e))
-    report.update(_gather_runner_info(e))
-    report.update(_gather_workflow_context(e))
+    report.update(_gather_action_metadata(env))
+    report.update(_gather_runner_info(env))
+    report.update(_gather_workflow_context(env))
 
     # Git context (commit_oid is required by the endpoint)
-    report["commit_oid"] = e.get("COMMIT_OID", "")
-    ref = e.get("REF", "")
+    report["commit_oid"] = env.get("COMMIT_OID", "")
+    ref = env.get("REF", "")
     if ref:
         report["ref"] = ref
 
     # User-supplied parameters (top-level fields to match endpoint schema)
-    if e.get("INPUT_LANGUAGE"):
-        report["language_name"] = e["INPUT_LANGUAGE"]
-    if e.get("INPUT_LABEL"):
-        report["category"] = e["INPUT_LABEL"]
+    if env.get("INPUT_LANGUAGE"):
+        report["language_name"] = env["INPUT_LANGUAGE"]
+    if env.get("INPUT_LABEL"):
+        report["category"] = env["INPUT_LABEL"]
 
     return report
 

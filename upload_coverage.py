@@ -4,13 +4,15 @@ import gzip
 import json
 import os
 import sys
+from pathlib import Path
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Mapping, Optional, Tuple
 
+from config import Config
 import status_report
+from user_error import UserError
 
 
 PERMISSIONS_ERROR = (
@@ -25,26 +27,6 @@ FAIL_ON_ERROR_HINT = (
 
 def emit_annotation(level: str, message: str) -> None:
     print(f"::{level}::{message}")
-
-
-def log_upload_parameters(
-    *,
-    commit_oid: str,
-    ref: str,
-    pr_number: str,
-    language: str,
-    label: str,
-    file_path: str,
-) -> None:
-    file_size = Path(file_path).stat().st_size
-    print("::group::Upload parameters")
-    print(f"  commit_oid: {commit_oid}")
-    print(f"  ref: {ref or '<not set>'}")
-    print(f"  pr_number: {pr_number or '<not set>'}")
-    print(f"  language: {language}")
-    print(f"  label: {label}")
-    print(f"  file: {file_path} ({file_size} bytes)")
-    print("::endgroup::")
 
 
 def _extract_message(body: str) -> str:
@@ -188,32 +170,19 @@ def main(
 
     upload_start = time.monotonic()
 
-    file_path = env.get("INPUT_FILE", "")
-    if not file_path or not Path(file_path).is_file():
-        emit_annotation("error", f"Coverage file not found: {file_path}")
+    config = Config(env)
+    try:
+        config.validate()
+    except UserError as error:
+        emit_annotation("error", str(error))
         _send_completed_report(
             starting_report, "user-error",
-            error_type="file_not_found", error_message=f"Coverage file not found: {file_path}",
+            error_type=error.type, error_message=str(error),
             repository=repository, api_url=api_url, token=token, opener=status_opener,
         )
         return 1
 
-    fail_on_error = env.get("FAIL_ON_ERROR", "true").lower() != "false"
-
-    commit_oid = env.get("COMMIT_OID", "")
-    ref = env.get("REF", "")
-    pr_number = env.get("PR_NUMBER", "")
-    language = env.get("INPUT_LANGUAGE", "")
-    label = env.get("INPUT_LABEL", "")
-
-    log_upload_parameters(
-        commit_oid=commit_oid,
-        ref=ref,
-        pr_number=pr_number,
-        language=language,
-        label=label,
-        file_path=file_path,
-    )
+    config.log_upload_parameters()
 
     try:
         payload = build_payload(

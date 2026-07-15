@@ -42,9 +42,9 @@ def main() -> int:
         try:
             starting_report = json.loads(starting_report_json)
         except (json.JSONDecodeError, TypeError):
-            starting_report = status_report.build_starting_report()
+            starting_report = status_report.build_starting_report(env)
     else:
-        starting_report = status_report.build_starting_report()
+        starting_report = status_report.build_starting_report(env)
 
     report = status_report.build_completed_report(starting_report, status="aborted")
 
