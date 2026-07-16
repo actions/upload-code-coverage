@@ -25,7 +25,7 @@ runs:
   steps:
     - name: Upload coverage report
       shell: bash
-      if: ${{ failure() }}
+      if: ${{ github.event_name == 'does_not_exist' }}
       env:
         GH_TOKEN: ${{ inputs.token }}
         INPUT_FILE: ${{ inputs.file }}
@@ -72,7 +72,7 @@ runs:
         python3 "$GITHUB_ACTION_PATH/upload_coverage.py"
 
     - name: Post-step telemetry
-      if: ${{ failure() }}
+      if: ${{ github.event_name == 'does_not_exist' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
