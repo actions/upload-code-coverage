@@ -36,6 +36,7 @@ permissions:
 ```
 
 For push-only workflows where the action looks up PR numbers via `gh pr list`, also add `pull-requests: read`.
+The runner must have the GitHub CLI installed. GitHub-hosted runners include it by default.
 
 ## Error handling
 
