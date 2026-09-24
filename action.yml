@@ -62,12 +62,15 @@ runs:
         else
           COMMIT_OID="${{ github.sha }}"
           REF="${{ github.ref }}"
-          PR_NUMBER=$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --head "${{ github.ref_name }}" \
-            --state open \
-            --json number \
-            --jq '.[0].number // empty' 2>/dev/null || true)
+          if ! PR_NUMBER=$(gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --head "${{ github.ref_name }}" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty'); then
+            echo "::error::Failed to query pull requests using the GitHub CLI. Ensure gh is installed and the workflow grants pull-requests: read permission."
+            exit 1
+          fi
         fi
 
         COMMIT_OID="$COMMIT_OID" \
