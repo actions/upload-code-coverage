@@ -25,6 +25,8 @@ In a separate-job layout, the test job generates the report and the upload job r
 - Pushes with an open pull request upload using the discovered PR number.
 - Pushes without an open pull request skip successfully.
 
+If a branch is pushed before its pull request is opened, coverage is not uploaded until the next push. To upload coverage when a pull request is opened without requiring another push, use a `pull_request` trigger.
+
 Push-only workflows have an existing requirement to grant the upload job `pull-requests: read`:
 
 ```yaml
