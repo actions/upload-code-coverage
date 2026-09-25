@@ -25,6 +25,16 @@ The action handles everything else automatically: gzip/base64 encoding, resolvin
 | `wait-for-processing-timeout` | No | `160` | How many seconds to wait for processing before failing the step. Set to 0 to disable waiting |
 | `token` | No | `github.token` | GitHub token with `code-quality:write` permission |
 
+## Requirements
+
+The action runs Bash and Python directly on the runner. It requires:
+
+- Bash
+- Python 3.9 or later, available as `python3` on `PATH`
+- GitHub CLI (`gh`) when the action must discover an associated pull request, such as for a `push` event
+
+GitHub-hosted runners include these tools. When using a self-hosted runner, ensure they are installed and available on `PATH`.
+
 ## Permissions
 
 The calling workflow or job must grant `code-quality: write`. The action cannot declare this itself.
@@ -35,8 +45,7 @@ permissions:
   code-quality: write
 ```
 
-For push-only workflows where the action looks up PR numbers via `gh pr list`, also add `pull-requests: read`.
-The runner must have the GitHub CLI installed. GitHub-hosted runners include it by default.
+When the action must discover an associated pull request, such as for a `push` event, it uses `gh pr list`. The calling workflow or job must also grant `pull-requests: read`.
 
 ## Error handling
 
