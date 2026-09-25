@@ -30,8 +30,8 @@ The action handles everything else automatically: gzip/base64 encoding, resolvin
 The action runs Bash and Python directly on the runner. It requires:
 
 - Bash
-- Python 3.9 or later
-- GitHub CLI (`gh`) when running for an event without pull-request context, such as `push`
+- Python 3.9 or later, available as `python3` on `PATH`
+- GitHub CLI (`gh`) when the action must discover an associated pull request, such as for a `push` event
 
 GitHub-hosted runners include these tools. When using a self-hosted runner, ensure they are installed and available on `PATH`.
 
@@ -45,7 +45,7 @@ permissions:
   code-quality: write
 ```
 
-For events without pull-request context, such as `push`, the action uses `gh pr list` to discover an associated pull request. The calling workflow or job must also grant `pull-requests: read`.
+When the action must discover an associated pull request, such as for a `push` event, it uses `gh pr list`. The calling workflow or job must also grant `pull-requests: read`.
 
 ## Error handling
 
