@@ -91,6 +91,8 @@ on:
 
 Push-only workflows can upload PR coverage by granting `pull-requests: read`. Repositories may also use broader `push` triggers for other CI requirements; pushes without an open PR are skipped safely.
 
+See [Choosing a workflow strategy](docs/workflow-strategies.md) for trigger and job layouts, or [Upgrading](docs/upgrading.md) for version and compatibility guidance.
+
 ## Full example (separate upload job)
 
 ```yaml
