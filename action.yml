@@ -27,7 +27,19 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Check coverage upload eligibility
+      id: eligibility
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        COVERAGE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        COVERAGE_PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        COVERAGE_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        COVERAGE_PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: python3 "$GITHUB_ACTION_PATH/resolve_upload_context.py"
+
     - name: Upload coverage report
+      if: steps.eligibility.outputs.should_upload == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
@@ -39,47 +51,16 @@ runs:
         GITHUB_EVENT_NAME: ${{ github.event_name }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_API_URL: ${{ github.api_url }}
+        COMMIT_OID: ${{ steps.eligibility.outputs.commit_oid }}
+        REF: ${{ steps.eligibility.outputs.ref }}
+        PR_NUMBER: ${{ steps.eligibility.outputs.pr_number }}
       run: |
         set -euo pipefail
 
-        export GH_HOST="${GITHUB_SERVER_URL#*://}"
-
-        if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
-          echo "::warning::Skipping coverage upload for merge queue. Configure your workflow to upload coverage for PRs and the default branch instead. To avoid spinning up a runner, add \"if: github.event_name != 'merge_group'\" to the upload job."
-          exit 0
-        fi
-
-        if [ "${{ github.event.pull_request.head.repo.full_name }}" != "" ] && \
-           [ "${{ github.event.pull_request.head.repo.full_name }}" != "$GITHUB_REPOSITORY" ]; then
-          echo "::notice::Skipping coverage upload for fork PR (from ${{ github.event.pull_request.head.repo.full_name }})"
-          exit 0
-        fi
-
-        if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "$GITHUB_EVENT_NAME" = "pull_request_target" ]; then
-          COMMIT_OID="${{ github.event.pull_request.head.sha }}"
-          REF=""
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-        else
-          COMMIT_OID="${{ github.sha }}"
-          REF="${{ github.ref }}"
-          if ! PR_NUMBER=$(gh pr list \
-              --repo "$GITHUB_REPOSITORY" \
-              --head "${{ github.ref_name }}" \
-              --state open \
-              --json number \
-              --jq '.[0].number // empty'); then
-            echo "::error::Failed to query pull requests using the GitHub CLI. Ensure gh is installed and the workflow grants pull-requests: read permission."
-            exit 1
-          fi
-        fi
-
-        COMMIT_OID="$COMMIT_OID" \
-        REF="$REF" \
-        PR_NUMBER="$PR_NUMBER" \
         python3 "$GITHUB_ACTION_PATH/upload_coverage.py"
 
     - name: Post-step telemetry
-      if: always() && env._COVERAGE_TELEMETRY_STARTED_AT != ''
+      if: always() && steps.eligibility.outputs.should_upload == 'true' && env._COVERAGE_TELEMETRY_STARTED_AT != ''
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
@@ -89,5 +70,5 @@ runs:
         WAIT_FOR_PROCESSING_TIMEOUT: ${{ inputs.wait-for-processing-timeout }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_API_URL: ${{ github.api_url }}
-        COMMIT_OID: ${{ github.event.pull_request.head.sha || github.sha }}
+        COMMIT_OID: ${{ steps.eligibility.outputs.commit_oid }}
       run: python3 "$GITHUB_ACTION_PATH/post_upload_coverage.py"
