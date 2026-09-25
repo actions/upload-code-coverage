@@ -147,6 +147,39 @@ class ResolveUploadContextTests(unittest.TestCase):
         self.assertFalse(context.should_upload)
         self.assertIn("fork PR", context.message)
 
+    def test_same_repository_pull_request_target_uploads(self):
+        env = dict(
+            self.base_env,
+            GITHUB_EVENT_NAME="pull_request_target",
+            GITHUB_REF="refs/heads/main",
+            COVERAGE_PR_HEAD_REPOSITORY="octo-org/octo-repo",
+            COVERAGE_PR_HEAD_SHA="cafebabe",
+            COVERAGE_PR_NUMBER="42",
+        )
+
+        context = resolve_upload_context.resolve_upload_context(env)
+
+        self.assertTrue(context.should_upload)
+        self.assertEqual("cafebabe", context.commit_oid)
+        self.assertEqual("", context.ref)
+        self.assertEqual("42", context.pr_number)
+
+    def test_fork_pull_request_target_skips(self):
+        env = dict(
+            self.base_env,
+            GITHUB_EVENT_NAME="pull_request_target",
+            GITHUB_REF="refs/heads/main",
+            COVERAGE_PR_HEAD_REPOSITORY="contributor/octo-repo",
+            COVERAGE_PR_HEAD_SHA="cafebabe",
+            COVERAGE_PR_NUMBER="42",
+        )
+
+        context = resolve_upload_context.resolve_upload_context(env)
+
+        self.assertFalse(context.should_upload)
+        self.assertEqual("notice", context.annotation_level)
+        self.assertIn("fork PR", context.message)
+
     def test_merge_group_skips(self):
         env = dict(self.base_env, GITHUB_EVENT_NAME="merge_group")
 
