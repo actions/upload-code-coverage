@@ -5,6 +5,7 @@
 ### Fixed
 
 - Non-default branch pushes no longer associate coverage with an unrelated fork pull request that uses the same branch name.
+- When a pushed branch has multiple open pull requests, the action prefers the pull request targeting the default branch. If no unique default-branch target exists, the upload skips successfully instead of selecting arbitrarily or failing CI.
 
 ## v1.4.3 - 2026-09-28
 

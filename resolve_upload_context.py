@@ -23,12 +23,20 @@ class UploadContext:
 class PullRequestLookup:
     number: str = ""
     error: str = ""
+    warning: str = ""
+
+
+@dataclass(frozen=True)
+class PullRequestCandidate:
+    number: int
+    base_ref_name: str
 
 
 def _parse_pull_request_lookup(
     output: str,
     repository: str,
     ref_name: str,
+    default_branch: str,
 ) -> PullRequestLookup:
     try:
         pull_requests = json.loads(output)
@@ -38,7 +46,7 @@ def _parse_pull_request_lookup(
     if not isinstance(pull_requests, list):
         return PullRequestLookup(error="gh returned invalid JSON: expected a list")
 
-    matching_numbers = []
+    matching_pull_requests: list[PullRequestCandidate] = []
     for pull_request in pull_requests:
         if not isinstance(pull_request, dict):
             return PullRequestLookup(
@@ -62,21 +70,44 @@ def _parse_pull_request_lookup(
             return PullRequestLookup(
                 error="gh returned invalid JSON: expected a pull request number"
             )
-        matching_numbers.append(number)
+        base_ref_name = pull_request.get("baseRefName")
+        if not isinstance(base_ref_name, str):
+            return PullRequestLookup(
+                error="gh returned invalid JSON: expected a pull request base branch"
+            )
 
-    if len(matching_numbers) > 1:
-        numbers = ", ".join(str(number) for number in sorted(matching_numbers))
+        candidate = PullRequestCandidate(number=number, base_ref_name=base_ref_name)
+        if candidate.base_ref_name == default_branch:
+            return PullRequestLookup(number=str(candidate.number))
+
+        matching_pull_requests.append(candidate)
+
+    if len(matching_pull_requests) == 1:
+        return PullRequestLookup(number=str(matching_pull_requests[0].number))
+
+    if len(matching_pull_requests) > 1:
+        numbers = ", ".join(
+            str(candidate.number)
+            for candidate in sorted(
+                matching_pull_requests,
+                key=lambda candidate: candidate.number,
+            )
+        )
         return PullRequestLookup(
-            error=(f"multiple open pull requests from {repository}:{ref_name} matched: {numbers}")
+            warning=(
+                f"multiple open pull requests from {repository}:{ref_name} matched: "
+                f"{numbers}, but none uniquely targets the default branch "
+                f"{default_branch}"
+            )
         )
 
-    number = str(matching_numbers[0]) if matching_numbers else ""
-    return PullRequestLookup(number=number)
+    return PullRequestLookup()
 
 
 def _find_open_pull_request(environ: Mapping[str, str]) -> PullRequestLookup:
     repository = environ.get("GITHUB_REPOSITORY", "")
     ref_name = environ.get("GITHUB_REF_NAME", "")
+    default_branch = environ.get("COVERAGE_DEFAULT_BRANCH", "")
     command_environment = dict(environ)
     server_url = environ.get("GITHUB_SERVER_URL", "")
     if server_url:
@@ -97,7 +128,7 @@ def _find_open_pull_request(environ: Mapping[str, str]) -> PullRequestLookup:
                 "--limit",
                 "1000",
                 "--json",
-                "number,headRefName,headRepository",
+                "number,headRefName,headRepository,baseRefName",
             ],
             capture_output=True,
             check=False,
@@ -112,7 +143,12 @@ def _find_open_pull_request(environ: Mapping[str, str]) -> PullRequestLookup:
             error=result.stderr.strip() or f"gh exited with status {result.returncode}"
         )
 
-    return _parse_pull_request_lookup(result.stdout, repository, ref_name)
+    return _parse_pull_request_lookup(
+        result.stdout,
+        repository,
+        ref_name,
+        default_branch,
+    )
 
 
 def resolve_upload_context(
@@ -175,6 +211,17 @@ def resolve_upload_context(
                         "Failed to query pull requests using the GitHub CLI: "
                         f"{pull_request.error}. Ensure gh is installed and the workflow "
                         "grants pull-requests: read permission."
+                    ),
+                )
+
+            if pull_request.warning:
+                return UploadContext(
+                    should_upload=False,
+                    annotation_level="warning",
+                    message=(
+                        f"Skipping coverage upload because {pull_request.warning}. "
+                        "Use a pull_request workflow trigger for unambiguous per-PR "
+                        "uploads."
                     ),
                 )
 

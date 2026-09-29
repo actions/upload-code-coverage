@@ -83,6 +83,24 @@ class ResolveUploadContextTests(unittest.TestCase):
         self.assertIn("gh is installed", context.message)
         self.assertIn("pull-requests: read", context.message)
 
+    def test_non_default_branch_push_with_ambiguous_lookup_skips(self):
+        env = dict(
+            self.base_env,
+            GITHUB_REF="refs/heads/feature",
+            GITHUB_REF_NAME="feature",
+        )
+
+        context = resolve_upload_context.resolve_upload_context(
+            env,
+            lambda _: resolve_upload_context.PullRequestLookup(
+                warning="multiple open pull requests matched: 42, 43"
+            ),
+        )
+
+        self.assertFalse(context.should_upload)
+        self.assertEqual("warning", context.annotation_level)
+        self.assertIn("multiple open pull requests", context.message)
+
     def test_default_branch_push_does_not_look_up_pull_request(self):
         lookup = mock.Mock()
 
@@ -261,6 +279,34 @@ class ResolveUploadContextTests(unittest.TestCase):
             self.assertIn("::error::", stdout.getvalue())
             self.assertIn("Code coverage upload failed", summary_path.read_text())
 
+    def test_ambiguous_lookup_writes_warning_and_exits_successfully(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "output"
+            summary_path = Path(directory) / "summary"
+            env = dict(
+                self.base_env,
+                GITHUB_REF="refs/heads/feature",
+                GITHUB_REF_NAME="feature",
+                GITHUB_OUTPUT=str(output_path),
+                GITHUB_STEP_SUMMARY=str(summary_path),
+            )
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout):
+                with mock.patch.object(
+                    resolve_upload_context,
+                    "_find_open_pull_request",
+                    return_value=resolve_upload_context.PullRequestLookup(
+                        warning="multiple open pull requests matched: 42, 43"
+                    ),
+                ):
+                    exit_code = resolve_upload_context.main(env)
+
+            self.assertEqual(0, exit_code)
+            self.assertIn("should_upload=false", output_path.read_text())
+            self.assertIn("::warning::", stdout.getvalue())
+            self.assertIn("Code coverage upload skipped", summary_path.read_text())
+
     def test_allowed_upload_writes_context_outputs_without_summary(self):
         with tempfile.TemporaryDirectory() as directory:
             output_path = Path(directory) / "output"
@@ -337,6 +383,7 @@ class ResolveUploadContextTests(unittest.TestCase):
                         "headRepository": {
                             "nameWithOwner": "octo-org/octo-repo",
                         },
+                        "baseRefName": "main",
                     }
                 ]
             )
@@ -371,7 +418,7 @@ class ResolveUploadContextTests(unittest.TestCase):
                 "--limit",
                 "1000",
                 "--json",
-                "number,headRefName,headRepository",
+                "number,headRefName,headRepository,baseRefName",
             ],
             run.call_args.args[0],
         )
@@ -390,6 +437,7 @@ class ResolveUploadContextTests(unittest.TestCase):
                                 "headRepository": {
                                     "nameWithOwner": "octo-org/octo-repo",
                                 },
+                                "baseRefName": "main",
                             }
                         ]
                     )
@@ -419,6 +467,7 @@ class ResolveUploadContextTests(unittest.TestCase):
                         "headRepository": {
                             "nameWithOwner": "contributor/octo-repo",
                         },
+                        "baseRefName": "main",
                     },
                     {
                         "number": 42,
@@ -426,6 +475,7 @@ class ResolveUploadContextTests(unittest.TestCase):
                         "headRepository": {
                             "nameWithOwner": "octo-org/octo-repo",
                         },
+                        "baseRefName": "main",
                     },
                 ]
             )
@@ -453,6 +503,7 @@ class ResolveUploadContextTests(unittest.TestCase):
                         "headRepository": {
                             "nameWithOwner": "contributor/octo-repo",
                         },
+                        "baseRefName": "main",
                     }
                 ]
             )
@@ -478,6 +529,7 @@ class ResolveUploadContextTests(unittest.TestCase):
                         "number": 41,
                         "headRefName": "feature",
                         "headRepository": None,
+                        "baseRefName": "main",
                     }
                 ]
             )
@@ -495,7 +547,7 @@ class ResolveUploadContextTests(unittest.TestCase):
         self.assertEqual("", result.number)
         self.assertEqual("", result.error)
 
-    def test_open_pull_request_lookup_reports_multiple_internal_matches(self):
+    def test_open_pull_request_lookup_prefers_default_branch_target(self):
         completed_process = subprocess_result(
             stdout=json.dumps(
                 [
@@ -505,6 +557,7 @@ class ResolveUploadContextTests(unittest.TestCase):
                         "headRepository": {
                             "nameWithOwner": "octo-org/octo-repo",
                         },
+                        "baseRefName": "release",
                     },
                     {
                         "number": 43,
@@ -512,6 +565,46 @@ class ResolveUploadContextTests(unittest.TestCase):
                         "headRepository": {
                             "nameWithOwner": "octo-org/octo-repo",
                         },
+                        "baseRefName": "main",
+                    },
+                ]
+            )
+        )
+
+        with mock.patch.object(
+            resolve_upload_context.subprocess,
+            "run",
+            return_value=completed_process,
+        ):
+            result = resolve_upload_context._find_open_pull_request(
+                dict(self.base_env, GITHUB_REF_NAME="feature")
+            )
+
+        self.assertEqual("43", result.number)
+        self.assertEqual("", result.error)
+        self.assertEqual("", result.warning)
+
+    def test_open_pull_request_lookup_warns_when_multiple_matches_have_no_default_target(
+        self,
+    ):
+        completed_process = subprocess_result(
+            stdout=json.dumps(
+                [
+                    {
+                        "number": 42,
+                        "headRefName": "feature",
+                        "headRepository": {
+                            "nameWithOwner": "octo-org/octo-repo",
+                        },
+                        "baseRefName": "release-1",
+                    },
+                    {
+                        "number": 43,
+                        "headRefName": "feature",
+                        "headRepository": {
+                            "nameWithOwner": "octo-org/octo-repo",
+                        },
+                        "baseRefName": "release-2",
                     },
                 ]
             )
@@ -527,8 +620,9 @@ class ResolveUploadContextTests(unittest.TestCase):
             )
 
         self.assertEqual("", result.number)
-        self.assertIn("multiple open pull requests", result.error)
-        self.assertIn("42, 43", result.error)
+        self.assertEqual("", result.error)
+        self.assertIn("multiple open pull requests", result.warning)
+        self.assertIn("42, 43", result.warning)
 
     def test_open_pull_request_lookup_reports_invalid_json(self):
         completed_process = subprocess_result(stdout="not json")

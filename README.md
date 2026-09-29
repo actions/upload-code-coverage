@@ -79,6 +79,8 @@ The action auto-detects the event type and resolves the correct behavior:
 - **Non-default branch `push` with an open PR**: Looks up the PR number and uploads coverage for the pushed commit.
 - **Non-default branch `push` without an open PR**: Skips successfully instead of sending an upload request the API cannot associate with a PR.
 
+When a pushed branch has multiple open pull requests in the repository, the action prefers the pull request targeting the default branch because coverage comparisons currently use the default branch as their baseline. If there is no unique default-branch target, the action skips the upload successfully and logs a warning.
+
 Configure workflows to run for pull requests and pushes to the default branch:
 
 ```yaml
