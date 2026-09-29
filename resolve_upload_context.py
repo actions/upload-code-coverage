@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import subprocess
 from collections.abc import Mapping
@@ -24,6 +25,55 @@ class PullRequestLookup:
     error: str = ""
 
 
+def _parse_pull_request_lookup(
+    output: str,
+    repository: str,
+    ref_name: str,
+) -> PullRequestLookup:
+    try:
+        pull_requests = json.loads(output)
+    except json.JSONDecodeError as error:
+        return PullRequestLookup(error=f"gh returned invalid JSON: {error.msg}")
+
+    if not isinstance(pull_requests, list):
+        return PullRequestLookup(error="gh returned invalid JSON: expected a list")
+
+    matching_numbers = []
+    for pull_request in pull_requests:
+        if not isinstance(pull_request, dict):
+            return PullRequestLookup(
+                error="gh returned invalid JSON: expected pull request objects"
+            )
+
+        head_repository = pull_request.get("headRepository")
+        if not isinstance(head_repository, dict):
+            continue
+
+        head_repository_name = head_repository.get("nameWithOwner")
+        if (
+            pull_request.get("headRefName") != ref_name
+            or not isinstance(head_repository_name, str)
+            or head_repository_name.casefold() != repository.casefold()
+        ):
+            continue
+
+        number = pull_request.get("number")
+        if not isinstance(number, int):
+            return PullRequestLookup(
+                error="gh returned invalid JSON: expected a pull request number"
+            )
+        matching_numbers.append(number)
+
+    if len(matching_numbers) > 1:
+        numbers = ", ".join(str(number) for number in sorted(matching_numbers))
+        return PullRequestLookup(
+            error=(f"multiple open pull requests from {repository}:{ref_name} matched: {numbers}")
+        )
+
+    number = str(matching_numbers[0]) if matching_numbers else ""
+    return PullRequestLookup(number=number)
+
+
 def _find_open_pull_request(environ: Mapping[str, str]) -> PullRequestLookup:
     repository = environ.get("GITHUB_REPOSITORY", "")
     ref_name = environ.get("GITHUB_REF_NAME", "")
@@ -44,10 +94,10 @@ def _find_open_pull_request(environ: Mapping[str, str]) -> PullRequestLookup:
                 ref_name,
                 "--state",
                 "open",
+                "--limit",
+                "1000",
                 "--json",
-                "number",
-                "--jq",
-                ".[0].number // empty",
+                "number,headRefName,headRepository",
             ],
             capture_output=True,
             check=False,
@@ -62,7 +112,7 @@ def _find_open_pull_request(environ: Mapping[str, str]) -> PullRequestLookup:
             error=result.stderr.strip() or f"gh exited with status {result.returncode}"
         )
 
-    return PullRequestLookup(number=result.stdout.strip())
+    return _parse_pull_request_lookup(result.stdout, repository, ref_name)
 
 
 def resolve_upload_context(
