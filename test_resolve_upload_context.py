@@ -278,6 +278,54 @@ class ResolveUploadContextTests(unittest.TestCase):
             self.assertIn("commit_oid=deadbeef", output)
             self.assertFalse(summary_path.exists())
 
+    def test_shell_metacharacters_are_written_as_literal_ref_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            dollar_sentinel = directory_path / "dollar-sentinel"
+            backtick_sentinel = directory_path / "backtick-sentinel"
+            quote_sentinel = directory_path / "quote-sentinel"
+            test_cases = [
+                (
+                    "dollar command substitution",
+                    f"feature-$(touch${{IFS}}{dollar_sentinel})",
+                    dollar_sentinel,
+                ),
+                (
+                    "backtick command substitution",
+                    f"feature-`touch${{IFS}}{backtick_sentinel}`",
+                    backtick_sentinel,
+                ),
+                (
+                    "double quote breakout",
+                    f'feature-";touch${{IFS}}{quote_sentinel};#',
+                    quote_sentinel,
+                ),
+            ]
+
+            for index, (case_name, ref_name, sentinel_path) in enumerate(test_cases):
+                with self.subTest(case=case_name, ref_name=ref_name):
+                    output_path = directory_path / f"output-{index}"
+                    env = dict(
+                        self.base_env,
+                        GITHUB_REF=f"refs/heads/{ref_name}",
+                        GITHUB_REF_NAME=ref_name,
+                        GITHUB_OUTPUT=str(output_path),
+                    )
+
+                    with mock.patch.object(
+                        resolve_upload_context,
+                        "_find_open_pull_request",
+                        return_value=resolve_upload_context.PullRequestLookup(number="42"),
+                    ):
+                        exit_code = resolve_upload_context.main(env)
+
+                    self.assertEqual(0, exit_code)
+                    self.assertFalse(sentinel_path.exists())
+                    self.assertIn(
+                        f"ref=refs/heads/{ref_name}\n",
+                        output_path.read_text(),
+                    )
+
     def test_open_pull_request_lookup_uses_existing_gh_contract(self):
         completed_process = subprocess_result(stdout="42\n")
 
@@ -316,6 +364,25 @@ class ResolveUploadContextTests(unittest.TestCase):
         )
         self.assertEqual("github.com", run.call_args.kwargs["env"]["GH_HOST"])
         self.assertEqual("token", run.call_args.kwargs["env"]["GH_TOKEN"])
+
+    def test_open_pull_request_lookup_treats_ref_name_as_literal_data(self):
+        for ref_name in ("feature-$(id)", "feature-`id`", 'feature-"quoted"'):
+            with self.subTest(ref_name=ref_name):
+                completed_process = subprocess_result(stdout="42\n")
+
+                with mock.patch.object(
+                    resolve_upload_context.subprocess,
+                    "run",
+                    return_value=completed_process,
+                ) as run:
+                    result = resolve_upload_context._find_open_pull_request(
+                        dict(self.base_env, GITHUB_REF_NAME=ref_name)
+                    )
+
+                self.assertEqual("42", result.number)
+                command = run.call_args.args[0]
+                self.assertEqual(ref_name, command[command.index("--head") + 1])
+                self.assertFalse(run.call_args.kwargs.get("shell", False))
 
     def test_open_pull_request_lookup_reports_command_failure(self):
         completed_process = subprocess_result(returncode=1, stderr="HTTP 403\n")
