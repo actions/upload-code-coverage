@@ -76,11 +76,12 @@ def _parse_pull_request_lookup(
                 error="gh returned invalid JSON: expected a pull request base branch"
             )
 
-        candidate = PullRequestCandidate(number=number, base_ref_name=base_ref_name)
-        if candidate.base_ref_name == default_branch:
-            return PullRequestLookup(number=str(candidate.number))
+        if base_ref_name == default_branch:
+            return PullRequestLookup(number=str(number))
 
-        matching_pull_requests.append(candidate)
+        matching_pull_requests.append(
+            PullRequestCandidate(number=number, base_ref_name=base_ref_name)
+        )
 
     if len(matching_pull_requests) == 1:
         return PullRequestLookup(number=str(matching_pull_requests[0].number))
@@ -152,11 +153,13 @@ def _find_open_pull_request(environ: Mapping[str, str]) -> PullRequestLookup:
 
 
 def resolve_upload_context(
-    environ: Optional[Mapping[str, str]] = None,
+    environ: Mapping[str, str],
     pull_request_lookup: Optional[Callable[[Mapping[str, str]], PullRequestLookup]] = None,
 ) -> UploadContext:
-    env = dict(os.environ if environ is None else environ)
-    lookup = _find_open_pull_request if pull_request_lookup is None else pull_request_lookup
+    env = dict(environ)
+    lookup_pull_request = (
+        _find_open_pull_request if pull_request_lookup is None else pull_request_lookup
+    )
     event_name = env.get("GITHUB_EVENT_NAME", "")
     repository = env.get("GITHUB_REPOSITORY", "")
     ref = env.get("GITHUB_REF", "")
@@ -188,13 +191,11 @@ def resolve_upload_context(
 
     if event_name == "push":
         default_branch = env.get("COVERAGE_DEFAULT_BRANCH", "")
-        is_non_default_branch = (
-            default_branch
-            and ref.startswith("refs/heads/")
-            and ref != f"refs/heads/{default_branch}"
-        )
+        default_branch_ref = f"refs/heads/{default_branch}"
+        is_branch_push = ref.startswith("refs/heads/")
+        is_non_default_branch = default_branch and is_branch_push and ref != default_branch_ref
         if is_non_default_branch:
-            pull_request = lookup(env)
+            pull_request = lookup_pull_request(env)
             if pull_request.number:
                 return UploadContext(
                     should_upload=True,
