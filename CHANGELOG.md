@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.4.4 - 2026-10-01
+
 ### Fixed
 
 - Non-default branch pushes no longer associate coverage with an unrelated fork pull request that uses the same branch name.
