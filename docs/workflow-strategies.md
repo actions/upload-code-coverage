@@ -25,6 +25,8 @@ In a separate-job layout, the test job generates the report and the upload job r
 - Pushes with an open pull request upload using the discovered PR number.
 - Pushes without an open pull request skip successfully.
 
+If the same pushed branch has multiple open pull requests, the action prefers the pull request targeting the default branch because coverage comparisons currently use the default branch as their baseline. If no unique default-branch target exists, the action skips successfully with a warning rather than choosing arbitrarily or failing CI.
+
 If a branch is pushed before its pull request is opened, coverage is not uploaded until the next push. To upload coverage when a pull request is opened without requiring another push, use a `pull_request` trigger.
 
 Push-only workflows have an existing requirement to grant the upload job `pull-requests: read`:

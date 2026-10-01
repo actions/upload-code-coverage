@@ -1,4 +1,5 @@
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -81,6 +82,24 @@ class ResolveUploadContextTests(unittest.TestCase):
         self.assertIn("HTTP 403", context.message)
         self.assertIn("gh is installed", context.message)
         self.assertIn("pull-requests: read", context.message)
+
+    def test_non_default_branch_push_with_ambiguous_lookup_skips(self):
+        env = dict(
+            self.base_env,
+            GITHUB_REF="refs/heads/feature",
+            GITHUB_REF_NAME="feature",
+        )
+
+        context = resolve_upload_context.resolve_upload_context(
+            env,
+            lambda _: resolve_upload_context.PullRequestLookup(
+                warning="multiple open pull requests matched: 42, 43"
+            ),
+        )
+
+        self.assertFalse(context.should_upload)
+        self.assertEqual("warning", context.annotation_level)
+        self.assertIn("multiple open pull requests", context.message)
 
     def test_default_branch_push_does_not_look_up_pull_request(self):
         lookup = mock.Mock()
@@ -201,12 +220,11 @@ class ResolveUploadContextTests(unittest.TestCase):
         self.assertTrue(context.should_upload)
         self.assertEqual("refs/heads/feature", context.ref)
 
-    def test_resolver_uses_process_environment_by_default(self):
+    def test_main_uses_process_environment_by_default(self):
         with mock.patch.dict("os.environ", self.base_env, clear=True):
-            context = resolve_upload_context.resolve_upload_context()
+            exit_code = resolve_upload_context.main()
 
-        self.assertTrue(context.should_upload)
-        self.assertEqual("deadbeef", context.commit_oid)
+        self.assertEqual(0, exit_code)
 
     def test_skipped_upload_writes_outputs_notice_and_summary(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -223,9 +241,9 @@ class ResolveUploadContextTests(unittest.TestCase):
 
             with redirect_stdout(stdout):
                 with mock.patch.object(
-                    resolve_upload_context,
-                    "_find_open_pull_request",
-                    return_value=resolve_upload_context.PullRequestLookup(),
+                    resolve_upload_context.subprocess,
+                    "run",
+                    return_value=subprocess_result(stdout="[]"),
                 ):
                     exit_code = resolve_upload_context.main(env)
 
@@ -249,9 +267,9 @@ class ResolveUploadContextTests(unittest.TestCase):
 
             with redirect_stdout(stdout):
                 with mock.patch.object(
-                    resolve_upload_context,
-                    "_find_open_pull_request",
-                    return_value=resolve_upload_context.PullRequestLookup(error="HTTP 403"),
+                    resolve_upload_context.subprocess,
+                    "run",
+                    return_value=subprocess_result(returncode=1, stderr="HTTP 403\n"),
                 ):
                     exit_code = resolve_upload_context.main(env)
 
@@ -259,6 +277,133 @@ class ResolveUploadContextTests(unittest.TestCase):
             self.assertIn("should_upload=false", output_path.read_text())
             self.assertIn("::error::", stdout.getvalue())
             self.assertIn("Code coverage upload failed", summary_path.read_text())
+
+    def test_ambiguous_lookup_writes_warning_and_exits_successfully(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "output"
+            summary_path = Path(directory) / "summary"
+            env = dict(
+                self.base_env,
+                GITHUB_REF="refs/heads/feature",
+                GITHUB_REF_NAME="feature",
+                GITHUB_OUTPUT=str(output_path),
+                GITHUB_STEP_SUMMARY=str(summary_path),
+            )
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout):
+                with mock.patch.object(
+                    resolve_upload_context.subprocess,
+                    "run",
+                    return_value=subprocess_result(
+                        stdout=json.dumps(
+                            [
+                                {
+                                    "number": 42,
+                                    "headRefName": "feature",
+                                    "headRepository": {
+                                        "nameWithOwner": "octo-org/octo-repo",
+                                    },
+                                    "baseRefName": "release-1",
+                                },
+                                {
+                                    "number": 43,
+                                    "headRefName": "feature",
+                                    "headRepository": {
+                                        "nameWithOwner": "octo-org/octo-repo",
+                                    },
+                                    "baseRefName": "release-2",
+                                },
+                            ]
+                        )
+                    ),
+                ):
+                    exit_code = resolve_upload_context.main(env)
+
+            self.assertEqual(0, exit_code)
+            self.assertIn("should_upload=false", output_path.read_text())
+            self.assertIn("::warning::", stdout.getvalue())
+            self.assertIn("Code coverage upload skipped", summary_path.read_text())
+
+    def test_main_writes_unique_pull_request_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "output"
+            env = dict(
+                self.base_env,
+                GITHUB_REF="refs/heads/feature",
+                GITHUB_REF_NAME="feature",
+                GITHUB_OUTPUT=str(output_path),
+            )
+            completed_process = subprocess_result(
+                stdout=json.dumps(
+                    [
+                        {
+                            "number": 42,
+                            "headRefName": "feature",
+                            "headRepository": {
+                                "nameWithOwner": "octo-org/octo-repo",
+                            },
+                            "baseRefName": "release",
+                        }
+                    ]
+                )
+            )
+
+            with mock.patch.object(
+                resolve_upload_context.subprocess,
+                "run",
+                return_value=completed_process,
+            ):
+                exit_code = resolve_upload_context.main(env)
+
+            self.assertEqual(0, exit_code)
+            output = output_path.read_text()
+            self.assertIn("should_upload=true", output)
+            self.assertIn("pr_number=42", output)
+
+    def test_main_prefers_default_target_pull_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "output"
+            env = dict(
+                self.base_env,
+                GITHUB_REF="refs/heads/feature",
+                GITHUB_REF_NAME="feature",
+                GITHUB_OUTPUT=str(output_path),
+            )
+            completed_process = subprocess_result(
+                stdout=json.dumps(
+                    [
+                        {
+                            "number": 42,
+                            "headRefName": "feature",
+                            "headRepository": {
+                                "nameWithOwner": "octo-org/octo-repo",
+                            },
+                            "baseRefName": "release",
+                        },
+                        {
+                            "number": 43,
+                            "headRefName": "feature",
+                            "headRepository": {
+                                "nameWithOwner": "octo-org/octo-repo",
+                            },
+                            "baseRefName": "main",
+                        },
+                    ]
+                )
+            )
+
+            with mock.patch.object(
+                resolve_upload_context.subprocess,
+                "run",
+                return_value=completed_process,
+            ):
+                exit_code = resolve_upload_context.main(env)
+
+            self.assertEqual(0, exit_code)
+            output = output_path.read_text()
+            self.assertIn("should_upload=true", output)
+            self.assertIn("pr_number=43", output)
 
     def test_allowed_upload_writes_context_outputs_without_summary(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -327,7 +472,20 @@ class ResolveUploadContextTests(unittest.TestCase):
                     )
 
     def test_open_pull_request_lookup_uses_existing_gh_contract(self):
-        completed_process = subprocess_result(stdout="42\n")
+        completed_process = subprocess_result(
+            stdout=json.dumps(
+                [
+                    {
+                        "number": 42,
+                        "headRefName": "feature",
+                        "headRepository": {
+                            "nameWithOwner": "octo-org/octo-repo",
+                        },
+                        "baseRefName": "main",
+                    }
+                ]
+            )
+        )
 
         with mock.patch.object(
             resolve_upload_context.subprocess,
@@ -355,10 +513,10 @@ class ResolveUploadContextTests(unittest.TestCase):
                 "feature",
                 "--state",
                 "open",
+                "--limit",
+                "1000",
                 "--json",
-                "number",
-                "--jq",
-                ".[0].number // empty",
+                "number,headRefName,headRepository,baseRefName",
             ],
             run.call_args.args[0],
         )
@@ -368,7 +526,20 @@ class ResolveUploadContextTests(unittest.TestCase):
     def test_open_pull_request_lookup_treats_ref_name_as_literal_data(self):
         for ref_name in ("feature-$(id)", "feature-`id`", 'feature-"quoted"'):
             with self.subTest(ref_name=ref_name):
-                completed_process = subprocess_result(stdout="42\n")
+                completed_process = subprocess_result(
+                    stdout=json.dumps(
+                        [
+                            {
+                                "number": 42,
+                                "headRefName": ref_name,
+                                "headRepository": {
+                                    "nameWithOwner": "octo-org/octo-repo",
+                                },
+                                "baseRefName": "main",
+                            }
+                        ]
+                    )
+                )
 
                 with mock.patch.object(
                     resolve_upload_context.subprocess,
@@ -383,6 +554,186 @@ class ResolveUploadContextTests(unittest.TestCase):
                 command = run.call_args.args[0]
                 self.assertEqual(ref_name, command[command.index("--head") + 1])
                 self.assertFalse(run.call_args.kwargs.get("shell", False))
+
+    def test_open_pull_request_lookup_selects_internal_pr_over_same_named_fork(self):
+        completed_process = subprocess_result(
+            stdout=json.dumps(
+                [
+                    {
+                        "number": 41,
+                        "headRefName": "feature",
+                        "headRepository": {
+                            "nameWithOwner": "contributor/octo-repo",
+                        },
+                        "baseRefName": "main",
+                    },
+                    {
+                        "number": 42,
+                        "headRefName": "feature",
+                        "headRepository": {
+                            "nameWithOwner": "octo-org/octo-repo",
+                        },
+                        "baseRefName": "main",
+                    },
+                ]
+            )
+        )
+
+        with mock.patch.object(
+            resolve_upload_context.subprocess,
+            "run",
+            return_value=completed_process,
+        ):
+            result = resolve_upload_context._find_open_pull_request(
+                dict(self.base_env, GITHUB_REF_NAME="feature")
+            )
+
+        self.assertEqual("42", result.number)
+        self.assertEqual("", result.error)
+
+    def test_open_pull_request_lookup_ignores_same_named_fork(self):
+        completed_process = subprocess_result(
+            stdout=json.dumps(
+                [
+                    {
+                        "number": 41,
+                        "headRefName": "feature",
+                        "headRepository": {
+                            "nameWithOwner": "contributor/octo-repo",
+                        },
+                        "baseRefName": "main",
+                    }
+                ]
+            )
+        )
+
+        with mock.patch.object(
+            resolve_upload_context.subprocess,
+            "run",
+            return_value=completed_process,
+        ):
+            result = resolve_upload_context._find_open_pull_request(
+                dict(self.base_env, GITHUB_REF_NAME="feature")
+            )
+
+        self.assertEqual("", result.number)
+        self.assertEqual("", result.error)
+
+    def test_open_pull_request_lookup_ignores_deleted_head_repository(self):
+        completed_process = subprocess_result(
+            stdout=json.dumps(
+                [
+                    {
+                        "number": 41,
+                        "headRefName": "feature",
+                        "headRepository": None,
+                        "baseRefName": "main",
+                    }
+                ]
+            )
+        )
+
+        with mock.patch.object(
+            resolve_upload_context.subprocess,
+            "run",
+            return_value=completed_process,
+        ):
+            result = resolve_upload_context._find_open_pull_request(
+                dict(self.base_env, GITHUB_REF_NAME="feature")
+            )
+
+        self.assertEqual("", result.number)
+        self.assertEqual("", result.error)
+
+    def test_open_pull_request_lookup_prefers_default_branch_target(self):
+        completed_process = subprocess_result(
+            stdout=json.dumps(
+                [
+                    {
+                        "number": 42,
+                        "headRefName": "feature",
+                        "headRepository": {
+                            "nameWithOwner": "octo-org/octo-repo",
+                        },
+                        "baseRefName": "release",
+                    },
+                    {
+                        "number": 43,
+                        "headRefName": "feature",
+                        "headRepository": {
+                            "nameWithOwner": "octo-org/octo-repo",
+                        },
+                        "baseRefName": "main",
+                    },
+                ]
+            )
+        )
+
+        with mock.patch.object(
+            resolve_upload_context.subprocess,
+            "run",
+            return_value=completed_process,
+        ):
+            result = resolve_upload_context._find_open_pull_request(
+                dict(self.base_env, GITHUB_REF_NAME="feature")
+            )
+
+        self.assertEqual("43", result.number)
+        self.assertEqual("", result.error)
+        self.assertEqual("", result.warning)
+
+    def test_open_pull_request_lookup_warns_when_multiple_matches_have_no_default_target(
+        self,
+    ):
+        completed_process = subprocess_result(
+            stdout=json.dumps(
+                [
+                    {
+                        "number": 42,
+                        "headRefName": "feature",
+                        "headRepository": {
+                            "nameWithOwner": "octo-org/octo-repo",
+                        },
+                        "baseRefName": "release-1",
+                    },
+                    {
+                        "number": 43,
+                        "headRefName": "feature",
+                        "headRepository": {
+                            "nameWithOwner": "octo-org/octo-repo",
+                        },
+                        "baseRefName": "release-2",
+                    },
+                ]
+            )
+        )
+
+        with mock.patch.object(
+            resolve_upload_context.subprocess,
+            "run",
+            return_value=completed_process,
+        ):
+            result = resolve_upload_context._find_open_pull_request(
+                dict(self.base_env, GITHUB_REF_NAME="feature")
+            )
+
+        self.assertEqual("", result.number)
+        self.assertEqual("", result.error)
+        self.assertIn("multiple open pull requests", result.warning)
+        self.assertIn("42, 43", result.warning)
+
+    def test_open_pull_request_lookup_reports_invalid_json(self):
+        completed_process = subprocess_result(stdout="not json")
+
+        with mock.patch.object(
+            resolve_upload_context.subprocess,
+            "run",
+            return_value=completed_process,
+        ):
+            result = resolve_upload_context._find_open_pull_request(self.base_env)
+
+        self.assertEqual("", result.number)
+        self.assertIn("invalid JSON", result.error)
 
     def test_open_pull_request_lookup_reports_command_failure(self):
         completed_process = subprocess_result(returncode=1, stderr="HTTP 403\n")
