@@ -154,3 +154,7 @@ jobs:
 
 - **Fork PRs are not supported.** Pull requests from forks don't have write access to the base repository, so the action cannot upload coverage. When a fork PR is detected, the action exits gracefully with a notice — it won't fail your CI.
 - **Merge queue runs are skipped.** Coverage should be uploaded for PRs and the default branch, making merge queue uploads unnecessary. The action logs a warning and exits successfully.
+
+## License
+
+This project is licensed under the terms of the MIT open source license. Please refer to the [LICENSE](./LICENSE) file for the full terms.
