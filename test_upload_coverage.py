@@ -606,6 +606,60 @@ class UploadCoverageTests(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
 
+    @mock.patch("upload_coverage.threading.Thread")
+    def test_telemetry_thread_daemon_and_timeout_on_success(self, mock_thread_class):
+        mock_thread_instance = mock.Mock()
+        mock_thread_class.return_value = mock_thread_instance
+
+        opener = mock.Mock(return_value=FakeResponse())
+        status_opener = mock.Mock(return_value=FakeResponse())
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            upload_coverage.main(
+                environ=self.base_env, opener=opener, status_opener=status_opener,
+            )
+
+        # Verify thread constructor arguments
+        mock_thread_class.assert_called_once()
+        kwargs = mock_thread_class.call_args.kwargs
+        self.assertEqual("telemetry-starting", kwargs.get("name"))
+        self.assertTrue(kwargs.get("daemon"))
+
+        # Verify join was called with the configured timeout
+        from status_report import STATUS_TIMEOUT_SECONDS
+        mock_thread_instance.join.assert_called_once_with(timeout=STATUS_TIMEOUT_SECONDS)
+
+    @mock.patch("upload_coverage.threading.Thread")
+    def test_telemetry_thread_timeout_on_missing_file(self, mock_thread_class):
+        mock_thread_instance = mock.Mock()
+        mock_thread_class.return_value = mock_thread_instance
+
+        env = dict(self.base_env, INPUT_FILE="/nonexistent")
+        status_opener = mock.Mock(return_value=FakeResponse())
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            upload_coverage.main(environ=env, opener=mock.Mock(), status_opener=status_opener)
+
+        from status_report import STATUS_TIMEOUT_SECONDS
+        mock_thread_instance.join.assert_called_once_with(timeout=STATUS_TIMEOUT_SECONDS)
+
+    @mock.patch("upload_coverage.threading.Thread")
+    def test_telemetry_thread_timeout_on_invalid_input(self, mock_thread_class):
+        mock_thread_instance = mock.Mock()
+        mock_thread_class.return_value = mock_thread_instance
+
+        env = dict(self.base_env, INPUT_LANGUAGE="", REF="", PR_NUMBER="")  # will trigger ValueError in build_payload
+        status_opener = mock.Mock(return_value=FakeResponse())
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            upload_coverage.main(environ=env, opener=mock.Mock(), status_opener=status_opener)
+
+        from status_report import STATUS_TIMEOUT_SECONDS
+        mock_thread_instance.join.assert_called_once_with(timeout=STATUS_TIMEOUT_SECONDS)
+
 
 if __name__ == "__main__":
     unittest.main()

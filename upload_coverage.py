@@ -4,6 +4,7 @@ import gzip
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -342,23 +343,31 @@ def main(
     api_url = env.get("GITHUB_API_URL", "https://api.github.com")
     token = env.get("GH_TOKEN", "")
 
-    # Send "starting" telemetry report
+    # Send "starting" telemetry report in a background thread
     starting_report = status_report.build_starting_report(env)
     status_report.save_state("started_at", starting_report.get("started_at", ""))
     status_report.save_state("starting_report", json.dumps(starting_report))
-    status_report.send_status_report(
-        starting_report,
-        repository=repository,
-        api_url=api_url,
-        token=token,
-        opener=status_opener,
+    
+    telemetry_thread = threading.Thread(
+        target=status_report.send_status_report,
+        args=(starting_report,),
+        kwargs={
+            "repository": repository,
+            "api_url": api_url,
+            "token": token,
+            "opener": status_opener,
+        },
+        name="telemetry-starting",
+        daemon=True,
     )
+    telemetry_thread.start()
 
     upload_start = time.monotonic()
 
     file_path = env.get("INPUT_FILE", "")
     if not file_path or not Path(file_path).is_file():
         emit_annotation("error", f"Coverage file not found: {file_path}")
+        telemetry_thread.join(timeout=status_report.STATUS_TIMEOUT_SECONDS)
         _send_completed_report(
             starting_report,
             "user-error",
@@ -417,6 +426,7 @@ def main(
         )
     except ValueError as error:
         emit_annotation("error", str(error))
+        telemetry_thread.join(timeout=status_report.STATUS_TIMEOUT_SECONDS)
         _send_completed_report(
             starting_report,
             "user-error",
@@ -498,6 +508,7 @@ def main(
             )
             return 1 if fail_on_error else 0
 
+    telemetry_thread.join(timeout=status_report.STATUS_TIMEOUT_SECONDS)
     _send_completed_report(
         starting_report,
         "success",
