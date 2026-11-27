@@ -51,6 +51,7 @@ class UploadCoverageTests(unittest.TestCase):
         self.coverage_contents = b'<coverage branch-rate="0.5" />\n'
         self.coverage_file.write_bytes(self.coverage_contents)
         self.base_env = {
+            "GITHUB_OUTPUT": str(self.test_dir / "outputs"),
             "INPUT_FILE": str(self.coverage_file),
             "INPUT_LANGUAGE": "Python",
             "INPUT_LABEL": "code-coverage/test",
@@ -95,6 +96,23 @@ class UploadCoverageTests(unittest.TestCase):
     def request_payload(self, opener):
         request = opener.call_args.args[0]
         return json.loads(request.data.decode("utf-8"))
+
+    def action_outputs(self):
+        result = {}
+        lines = iter((self.test_dir / "outputs").read_text().splitlines())
+        for line in lines:
+            if "<<" in line:
+                name, delimiter = line.split("<<", 1)
+                value = []
+                for entry in lines:
+                    if entry == delimiter:
+                        break
+                    value.append(entry)
+                result[name] = "\n".join(value)
+            else:
+                name, value = line.split("=", 1)
+                result[name] = value
+        return result
 
     # --- File validation ---
 
@@ -142,6 +160,11 @@ class UploadCoverageTests(unittest.TestCase):
         self.assertIn("::warning::Skipped coverage processing", output)
         self.assertIn("commit is not the latest commit on the branch", output)
         self.assertNotIn("Waiting for processing to finish", output)
+        self.assertEqual("skipped", self.action_outputs()["outcome"])
+        self.assertEqual("", self.action_outputs()["report-id"])
+        self.assertEqual(
+            "commit is not the latest commit on the branch", self.action_outputs()["skip-reason"]
+        )
         opener.assert_called_once()
 
     def test_200_without_coverage_id_warns_when_waiting_is_disabled(self):
@@ -187,6 +210,8 @@ class UploadCoverageTests(unittest.TestCase):
         )
         self.assertEqual(0, exit_code)
         self.assertEqual(3, opener.call_count)
+        self.assertEqual("processed", self.action_outputs()["outcome"])
+        self.assertEqual("b814ebc9-8d00-47b7-b08e-575796cccd03", self.action_outputs()["report-id"])
 
     def test_processing_failure_exits_with_error_by_default(self):
         env = dict(self.base_env, WAIT_FOR_PROCESSING_TIMEOUT="10")
@@ -221,6 +246,8 @@ class UploadCoverageTests(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
         self.assertIn("::error::Coverage report processing failed", output)
+        self.assertEqual("failed", self.action_outputs()["outcome"])
+        self.assertEqual("b814ebc9-8d00-47b7-b08e-575796cccd03", self.action_outputs()["report-id"])
 
     def test_waiting_for_processing_can_be_disabled(self):
         env = dict(self.base_env, WAIT_FOR_PROCESSING_TIMEOUT="0")
@@ -234,7 +261,19 @@ class UploadCoverageTests(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
         self.assertNotIn("Waiting for processing to finish", output)
+        self.assertEqual("uploaded", self.action_outputs()["outcome"])
         opener.assert_called_once()
+
+    def test_multiline_api_skip_reason_cannot_inject_an_action_output(self):
+        reason = "outdated commit\noutcome=processed\nreport-id=forged"
+        opener = mock.Mock(
+            return_value=FakeResponse(status=200, body=json.dumps({"message": reason}).encode())
+        )
+        exit_code, _, _ = self.run_main(opener=opener)
+        self.assertEqual(0, exit_code)
+        self.assertEqual("skipped", self.action_outputs()["outcome"])
+        self.assertEqual("", self.action_outputs()["report-id"])
+        self.assertEqual(reason, self.action_outputs()["skip-reason"])
 
     def test_processing_timeout_exits_with_error(self):
         env = dict(self.base_env, WAIT_FOR_PROCESSING_TIMEOUT="40")

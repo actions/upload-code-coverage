@@ -251,6 +251,8 @@ class ResolveUploadContextTests(unittest.TestCase):
             self.assertIn("should_upload=false", output_path.read_text())
             self.assertIn("::notice::", stdout.getvalue())
             self.assertIn("Code coverage upload skipped", summary_path.read_text())
+            self.assertIn("outcome=skipped\n", output_path.read_text())
+            self.assertIn("skip-reason=Skipping coverage upload", output_path.read_text())
 
     def test_lookup_failure_writes_error_and_exits_nonzero(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -277,6 +279,7 @@ class ResolveUploadContextTests(unittest.TestCase):
             self.assertIn("should_upload=false", output_path.read_text())
             self.assertIn("::error::", stdout.getvalue())
             self.assertIn("Code coverage upload failed", summary_path.read_text())
+            self.assertIn("outcome=failed\n", output_path.read_text())
 
     def test_ambiguous_lookup_writes_warning_and_exits_successfully(self):
         with tempfile.TemporaryDirectory() as directory:

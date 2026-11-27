@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 import status_report
+from action_outputs import write_outputs
 from categorised_error import CategorisedError
 
 PERMISSIONS_ERROR = (
@@ -337,6 +338,7 @@ def main(
     status_opener=urllib.request.urlopen,
 ) -> int:
     env = dict(os.environ if environ is None else environ)
+    write_outputs(env, {"outcome": "failed", "report-id": "", "skip-reason": ""})
 
     repository = env.get("GITHUB_REPOSITORY", "")
     api_url = env.get("GITHUB_API_URL", "https://api.github.com")
@@ -458,6 +460,17 @@ def main(
         )
         return 1 if fail_on_error else 0
 
+    if coverage_id is None:
+        write_outputs(
+            env,
+            {
+                "outcome": "skipped",
+                "skip-reason": _extract_message(body) or "API skipped processing",
+            },
+        )
+    else:
+        write_outputs(env, {"report-id": str(coverage_id)})
+
     if coverage_id is not None and wait_for_processing_timeout > 0:
         try:
             error_msg = wait_for_processing(
@@ -497,6 +510,11 @@ def main(
                 opener=status_opener,
             )
             return 1 if fail_on_error else 0
+
+    if coverage_id is not None:
+        write_outputs(
+            env, {"outcome": "processed" if wait_for_processing_timeout > 0 else "uploaded"}
+        )
 
     _send_completed_report(
         starting_report,
