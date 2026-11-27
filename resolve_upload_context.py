@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlparse
 
+from action_outputs import write_outputs
+
 
 @dataclass(frozen=True)
 class UploadContext:
@@ -269,6 +271,10 @@ def main(environ: Optional[Mapping[str, str]] = None) -> int:
     if not context.should_upload:
         print(f"::{context.annotation_level}::{context.message}")
         outcome = "failed" if context.annotation_level == "error" else "skipped"
+        write_outputs(
+            env,
+            {"outcome": outcome, "skip-reason": context.message if outcome == "skipped" else ""},
+        )
         _append_lines(
             summary_file_path,
             [f"### Code coverage upload {outcome}", "", context.message],

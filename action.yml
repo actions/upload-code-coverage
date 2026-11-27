@@ -24,6 +24,17 @@ inputs:
     required: false
     default: ${{ github.token }}
 
+outputs:
+  outcome:
+    description: 'Publication outcome: skipped, uploaded (accepted without waiting), processed, or failed. Independent of fail-on-error.'
+    value: ${{ steps.upload.outputs.outcome || steps.eligibility.outputs.outcome }}
+  report-id:
+    description: 'API report ID when the upload was accepted, including when later processing failed.'
+    value: ${{ steps.upload.outputs.report-id }}
+  skip-reason:
+    description: 'Eligibility or API explanation when publication was skipped.'
+    value: ${{ steps.upload.outputs.skip-reason || steps.eligibility.outputs.skip-reason }}
+
 runs:
   using: composite
   steps:
@@ -39,6 +50,7 @@ runs:
       run: python3 "$GITHUB_ACTION_PATH/resolve_upload_context.py"
 
     - name: Upload coverage report
+      id: upload
       if: steps.eligibility.outputs.should_upload == 'true'
       shell: bash
       env:
